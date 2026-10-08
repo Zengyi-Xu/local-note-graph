@@ -86,6 +86,10 @@ function renderInline(nodes: Inline[], keyPrefix: string, ctx: Ctx): React.React
             #{node.v}
           </span>
         )
+      case 'sub':
+        return <sub key={key}>{renderInline(node.c, key, ctx)}</sub>
+      case 'sup':
+        return <sup key={key}>{renderInline(node.c, key, ctx)}</sup>
       default:
         return null
     }

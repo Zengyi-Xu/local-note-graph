@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { uid, extractLinks } from '@/types/note'
 import type { Note } from '@/types/note'
 
-const STORAGE_KEY = 'note-graph-notes-v1'
+const STORAGE_KEY = 'kaust-knowledge-graph-notes-v1'
 /** 用户主动清空所有笔记时置位，避免下次启动又被种子/同步数据"复活" */
-const EMPTY_FLAG = 'note-graph-empty'
+const EMPTY_FLAG = 'kaust-knowledge-graph-empty'
 
 function isExplicitlyEmpty(): boolean {
   return localStorage.getItem(EMPTY_FLAG) === '1'
@@ -19,57 +19,101 @@ function seedNotes(): Note[] {
       type: 'other',
       grade: '',
       tags: ['指南'],
-      content: `欢迎使用本地笔记图谱。
+      content: `欢迎使用 KAUST 团队知识图谱！
 
-## 写笔记
+## 这个工具是做什么的
 
-默认以预览模式阅读，切换到编辑标签即可修改 Markdown。
-用 [[项目计划]] 这样的双括号建立笔记关联，用 #标签 组织内容。
+用来记录 [[Yating Wan 课题组]] 里同事们的信息：他们完成了什么工作、你可以向谁寻求哪方面的帮助。
 
-## 图谱
+## 五种笔记类型
 
-图谱视图会显示笔记之间的关联，可按类型与标签筛选。
+- **人物** — 记录某位同事：研究方向、技能、性格、可以帮你什么
+- **任务/项目** — 课题组的项目、paper、实验任务
+- **技能** — 具体技术点（如某个软件、实验方法）
+- **求问/学习** — 你想学的东西、想问的问题
+- **其他** — 任何不方便归类的内容
 
-## 备份
+## 如何建立联系
 
-数据保存在本机。请定期通过顶栏导出 JSON 备份。`,
+在笔记正文中用双方括号引用其他笔记，例如：[[示例人物 张三]]。
+被引用的笔记会在图谱视图中与当前笔记连线。
+
+## 标签与年级
+
+- 用 #标签 的形式给笔记打标签，如 #机器学习 #电镜
+- 人物笔记可以设置「年级/身份」（教授/博后/博士/硕士…），图谱可按此筛选
+
+## 图谱视图
+
+切换到「图谱」页面后，可以：
+
+1. 按**类型**筛选（只看人物、只看任务…）
+2. 按**年级**筛选（只看博士生…）
+3. 按**标签**筛选
+4. 点击节点进入**焦点模式**，只显示与该节点直接相连的笔记，简化复杂图谱
+5. 拖动节点调整布局
+
+数据保存在浏览器本地（localStorage），不会上传。`,
       createdAt: now,
       updatedAt: now,
     },
     {
       id: uid(),
-      title: '项目计划',
+      title: '示例人物 张三',
+      type: 'person',
+      grade: 'phd',
+      tags: ['示例', '机器学习'],
+      content: `这是一篇**示例人物**笔记，了解用法后可以删除。
+
+## 基本信息
+
+- 年级：博士生（三年级）
+- 方向：#机器学习 在材料筛选中的应用
+
+## 他完成过的工作
+
+- 参与了 [[示例项目 某材料数据库]] 的搭建
+- 熟悉 Python 和 [[技能示例 PyTorch]]
+
+## 可以寻求的帮助
+
+- 问代码问题很耐心，可以约每周讨论
+- 借得到某仪器的预约权限
+
+关联：[[使用指南]]`,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: uid(),
+      title: '示例项目 某材料数据库',
       type: 'task',
       grade: '',
-      tags: ['示例', '计划'],
-      content: `## 本周任务
+      tags: ['示例', '数据库'],
+      content: `示例项目笔记。
 
-- 整理 [[资料索引]]
-- 复习 [[Markdown 技巧]]
+## 简介
 
-用笔记之间的双链把相关事项连起来。`,
+课题组维护的某材料性质数据库。
+
+## 相关成员
+
+- [[示例人物 张三]] 负责数据清洗
+- 需要 [[技能示例 PyTorch]] 做模型训练`,
       createdAt: now,
       updatedAt: now,
     },
     {
       id: uid(),
-      title: '资料索引',
-      type: 'other',
-      grade: '',
-      tags: ['示例', '资料'],
-      content: `把需要阅读的资料列在这里，再从 [[项目计划]] 跳转过来。`,
-      createdAt: now,
-      updatedAt: now,
-    },
-    {
-      id: uid(),
-      title: 'Markdown 技巧',
+      title: '技能示例 PyTorch',
       type: 'skill',
       grade: '',
-      tags: ['示例', '写作'],
-      content: `**加粗**、*斜体*、列表和表格都可以在预览中呈现。
+      tags: ['示例', '编程'],
+      content: `示例技能笔记。
 
-返回 [[使用指南]]。`,
+深度学习框架。[[示例人物 张三]] 用它搭过 GNN 模型。
+
+可以在 #求问/学习 笔记里记录你想学的 PyTorch 知识点。`,
       createdAt: now,
       updatedAt: now,
     },
@@ -93,10 +137,14 @@ function load(): Note[] {
 
 export function useNotes() {
   const [notes, setNotes] = useState<Note[]>(load)
+  const [hydrated, setHydrated] = useState(false)
 
   // 首次启动：优先从仓库的 notes.json 同步；没有则用内置示例（用户主动清空过则跳过）
   useEffect(() => {
-    if (isExplicitlyEmpty()) return
+    if (isExplicitlyEmpty()) {
+      setHydrated(true)
+      return
+    }
     let cancelled = false
     ;(async () => {
       try {
@@ -105,13 +153,15 @@ export function useNotes() {
           const arr = await r.json()
           if (!cancelled && Array.isArray(arr) && arr.length > 0) {
             setNotes((prev) => (prev.length > 0 ? prev : (arr as Note[])))
-            return
+          } else if (!cancelled) {
+            setNotes((prev) => (prev.length > 0 ? prev : seedNotes()))
           }
         }
       } catch {
         /* no notes.json in repo */
       }
       if (!cancelled) setNotes((prev) => (prev.length > 0 ? prev : seedNotes()))
+      if (!cancelled) setHydrated(true)
     })()
     return () => {
       cancelled = true
@@ -196,7 +246,7 @@ export function useNotes() {
     })
   }, [notes, byTitle])
 
-  return { notes, createNote, updateNote, deleteNote, resolveLink, edges }
+  return { notes, hydrated, createNote, updateNote, deleteNote, resolveLink, edges }
 }
 
 export type NotesApi = ReturnType<typeof useNotes>

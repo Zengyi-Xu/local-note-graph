@@ -1,4 +1,4 @@
-import { useMemo, useState, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react'
 import { useNotes } from '@/hooks/useNotes'
 import { NoteList } from '@/components/NoteList'
 import { NoteEditor } from '@/components/NoteEditor'
@@ -9,18 +9,24 @@ import type { NoteType, Grade, Note } from '@/types/note'
 import { Button } from '@/components/ui/button'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
-import { Network, NotebookText, Upload, FileUp, RefreshCw } from 'lucide-react'
+import { Network, NotebookText, Upload, FileUp, FolderSync, Settings2, Save } from 'lucide-react'
 import { toast, Toaster } from 'sonner'
+import { AUTO_SYNC_KEY, downloadNotes, isDesktop, saveNotesToSyncFile, SYNC_PATH_KEY } from '@/lib/syncFile'
+import { Switch } from '@/components/ui/switch'
 
 export default function App() {
   const api = useNotes()
-  const { notes } = api
+  const { notes, hydrated } = api
   const [view, setView] = useState<'notes' | 'graph'>('notes')
   const [activeId, setActiveId] = useState<string | null>(null)
   const [focusId, setFocusId] = useState<string | null>(null)
   const [filters, setFilters] = useState<Filters>({ types: new Set(), grades: new Set(), tags: new Set(), search: '' })
   const fileRef = useRef<HTMLInputElement>(null)
   const mdRef = useRef<HTMLInputElement>(null)
+  const [syncPath, setSyncPath] = useState(() => localStorage.getItem(SYNC_PATH_KEY) ?? '')
+  const [autoSync, setAutoSync] = useState(() => localStorage.getItem(AUTO_SYNC_KEY) === '1')
+  const [syncing, setSyncing] = useState(false)
+  const [lastSyncAt, setLastSyncAt] = useState<number | null>(null)
 
   const active = notes.find((n) => n.id === activeId) ?? notes[0] ?? null
 
@@ -50,12 +56,7 @@ export default function App() {
   }
 
   const exportJson = () => {
-    const blob = new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = `note-graph-${new Date().toISOString().slice(0, 10)}.json`
-    a.click()
-    URL.revokeObjectURL(a.href)
+    downloadNotes(notes, `kaust-notes-${new Date().toISOString().slice(0, 10)}.json`)
     toast.success('已导出全部笔记为 JSON 备份')
   }
 
@@ -99,28 +100,69 @@ export default function App() {
     toast.success(`已导入「${title}」`)
   }
 
-  const exportSync = () => {
-    const blob = new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' })
-    const a = document.createElement('a')
-    a.href = URL.createObjectURL(blob)
-    a.download = 'notes.json'
-    a.click()
-    URL.revokeObjectURL(a.href)
-    toast.success('已导出 notes.json；这是私人数据，请勿提交到公开仓库')
-  }
+  const chooseSyncFile = useCallback(async () => {
+    const api = window.knowledgeGraphDesktop
+    if (!api) {
+      toast.info('请使用桌面版选择同步文件；浏览器版会下载 JSON 文件')
+      return null
+    }
+    const selected = await api.chooseSyncFile()
+    if (!selected) return null
+    localStorage.setItem(SYNC_PATH_KEY, selected)
+    setSyncPath(selected)
+    toast.success('已设置同步文件位置')
+    return selected
+  }, [])
+
+  const syncNow = useCallback(async (quiet = false) => {
+    if (!syncPath) {
+      if (!quiet) {
+        if (isDesktop()) {
+          await chooseSyncFile()
+        } else {
+          downloadNotes(notes, 'notes.json')
+          toast.success('已下载 notes.json，可放入同步文件夹')
+        }
+      }
+      return
+    }
+    setSyncing(true)
+    try {
+      await saveNotesToSyncFile(notes, syncPath)
+      setLastSyncAt(Date.now())
+      if (!quiet) toast.success('已保存到同步文件')
+    } catch {
+      toast.error('同步文件保存失败，请重新选择文件位置')
+    } finally {
+      setSyncing(false)
+    }
+  }, [chooseSyncFile, notes, syncPath])
+
+  useEffect(() => {
+    localStorage.setItem(AUTO_SYNC_KEY, autoSync ? '1' : '0')
+  }, [autoSync])
+
+  useEffect(() => {
+    if (!autoSync || !syncPath || !hydrated) return
+    const timer = window.setTimeout(() => void syncNow(true), 900)
+    return () => window.clearTimeout(timer)
+  }, [autoSync, hydrated, syncNow])
 
   return (
     <div className="flex h-screen flex-col bg-background text-foreground">
       {/* 顶栏 */}
       <header className="flex h-14 items-center gap-3 border-b px-4">
         <Network className="h-5 w-5 text-primary" />
-        <h1 className="text-base font-bold">本地笔记图谱</h1>
-        <span className="text-xs text-muted-foreground">{notes.length} 篇笔记</span>
+        <h1 className="text-base font-bold">KAUST 团队知识图谱</h1>
+        <span className="text-xs text-muted-foreground">Yating Wan 课题组 · {notes.length} 篇笔记</span>
         <div className="ml-auto flex items-center gap-2">
           <input ref={fileRef} type="file" accept=".json" className="hidden" onChange={(e) => e.target.files?.[0] && importJson(e.target.files[0])} />
           <input ref={mdRef} type="file" accept=".md,.markdown" className="hidden" onChange={(e) => e.target.files?.[0] && importMd(e.target.files[0])} />
-          <Button variant="outline" size="sm" onClick={exportSync}>
-            <RefreshCw className="mr-1 h-3.5 w-3.5" /> 导出同步文件
+          <Button variant="outline" size="sm" onClick={() => void syncNow()}>
+            <Save className="mr-1 h-3.5 w-3.5" /> 保存到同步文件
+          </Button>
+          <Button variant="outline" size="icon" title="选择同步文件" onClick={() => void chooseSyncFile()}>
+            <FolderSync className="h-4 w-4" />
           </Button>
           <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()}>
             <Upload className="mr-1 h-3.5 w-3.5" /> 导入备份
@@ -131,6 +173,18 @@ export default function App() {
           <Button variant="outline" size="sm" onClick={exportJson}>导出备份</Button>
         </div>
       </header>
+      <div className="flex items-center gap-3 border-b bg-muted/20 px-4 py-1.5 text-xs text-muted-foreground">
+        <Settings2 className="h-3.5 w-3.5" />
+        <span className="truncate" title={syncPath || '尚未选择同步文件'}>
+          {syncPath ? `同步文件：${syncPath}` : '尚未选择同步文件'}
+        </span>
+        <label className="ml-auto flex shrink-0 items-center gap-2">
+          <span>自动同步</span>
+          <Switch checked={autoSync} onCheckedChange={setAutoSync} disabled={!syncPath} aria-label="自动同步" />
+        </label>
+        {syncing && <span>保存中…</span>}
+        {!syncing && lastSyncAt && <span>已保存 {new Date(lastSyncAt).toLocaleTimeString()}</span>}
+      </div>
 
       <div className="flex min-h-0 flex-1">
         {/* 左侧：笔记列表 */}

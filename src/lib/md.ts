@@ -24,6 +24,8 @@ export type Inline =
   | { t: 'image'; src: string; alt: string }
   | { t: 'wikilink'; target: string; alias?: string }
   | { t: 'tag'; v: string }
+  | { t: 'sub'; c: Inline[] }
+  | { t: 'sup'; c: Inline[] }
 
 export interface ListItem {
   checked?: boolean
@@ -120,6 +122,14 @@ export function parseInline(src: string): Inline[] {
     if ((m = rest.match(/^<((?:https?|mailto):[^>\s]+)>/i))) {
       flush()
       pushInline(out, { t: 'link', href: m[1], c: [{ t: 'text', v: m[1] }] })
+      i += m[0].length
+      continue
+    }
+
+    // <sub>下标</sub> / <sup>上标</sup>
+    if ((m = rest.match(/^<(sub|sup)>([\s\S]*?)<\/\1>/i))) {
+      flush()
+      pushInline(out, { t: m[1].toLowerCase() as 'sub' | 'sup', c: parseInline(m[2]) })
       i += m[0].length
       continue
     }
