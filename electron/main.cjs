@@ -138,7 +138,7 @@ if (!hasSingleInstanceLock) {
   })
 
   app.whenReady().then(() => {
-    app.setAppUserModelId('com.kaust.knowledgegraph')
+    app.setAppUserModelId('app.localnotegraph.desktop')
     registerAppProtocol()
     registerSyncHandlers()
     createWindow()
