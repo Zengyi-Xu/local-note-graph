@@ -106,7 +106,7 @@ export default function App() {
     a.download = 'notes.json'
     a.click()
     URL.revokeObjectURL(a.href)
-    toast.success('已导出 notes.json —— 放入仓库 public/ 目录并提交，即可在另一台电脑同步')
+    toast.success('已导出 notes.json；这是私人数据，请勿提交到公开仓库')
   }
 
   return (
