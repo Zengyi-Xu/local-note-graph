@@ -28,7 +28,7 @@ function seedNotes(): Note[] {
 ## 五种笔记类型
 
 - **人物** — 记录某位同事：研究方向、技能、性格、可以帮你什么
-- **任务/项目** — 课题组的项目、paper、实验任务
+- **任务/项目** — 团队的项目、paper、实验任务
 - **技能** — 具体技术点（如某个软件、实验方法）
 - **求问/学习** — 你想学的东西、想问的问题
 - **其他** — 任何不方便归类的内容
@@ -94,7 +94,7 @@ function seedNotes(): Note[] {
 
 ## 简介
 
-课题组维护的某材料性质数据库。
+团队维护的某材料性质数据库。
 
 ## 相关成员
 
@@ -214,6 +214,81 @@ export function useNotes() {
     })
   }, [])
 
+  /** 用一批笔记整体替换本地数据（用于「从 notes.json 重新载入」） */
+  const replaceAll = useCallback((incoming: Note[]) => {
+    const now = Date.now()
+    const next: Note[] = incoming
+      .filter((n) => n && typeof n.title === 'string' && typeof n.content === 'string')
+      .map((n) => ({
+        id: n.id || uid(),
+        title: n.title,
+        type: n.type ?? 'other',
+        grade: n.grade ?? '',
+        tags: Array.isArray(n.tags) ? n.tags : [],
+        content: n.content,
+        createdAt: n.createdAt ?? now,
+        updatedAt: n.updatedAt ?? now,
+      }))
+    setNotes(next)
+    try {
+      if (next.length > 0) localStorage.removeItem(EMPTY_FLAG)
+    } catch {
+      /* ignore */
+    }
+    return next.length
+  }, [])
+
+  /** 按标题合并一批笔记（同标题更新，新标题新增），避免出现重复节点 */
+  const mergeByTitle = useCallback(
+    (incoming: Note[]) => {
+      const now = Date.now()
+      const pending = new Map<string, Note>()
+      for (const raw of incoming) {
+        if (raw && typeof raw.title === 'string' && typeof raw.content === 'string') {
+          pending.set(raw.title.toLowerCase(), raw)
+        }
+      }
+      let updated = 0
+      const next: Note[] = notes.map((n) => {
+        const key = n.title.toLowerCase()
+        const raw = pending.get(key)
+        if (!raw) return n
+        pending.delete(key)
+        updated++
+        return {
+          ...n,
+          type: raw.type ?? n.type,
+          grade: raw.grade ?? n.grade,
+          tags: Array.isArray(raw.tags) ? raw.tags : n.tags,
+          content: raw.content,
+          updatedAt: now,
+        }
+      })
+      let added = 0
+      for (const raw of pending.values()) {
+        next.unshift({
+          id: raw.id || uid(),
+          title: raw.title,
+          type: raw.type ?? 'other',
+          grade: raw.grade ?? '',
+          tags: Array.isArray(raw.tags) ? raw.tags : [],
+          content: raw.content,
+          createdAt: raw.createdAt ?? now,
+          updatedAt: raw.updatedAt ?? now,
+        })
+        added++
+      }
+      setNotes(next)
+      try {
+        if (next.length > 0) localStorage.removeItem(EMPTY_FLAG)
+      } catch {
+        /* ignore */
+      }
+      return { added, updated }
+    },
+    [notes],
+  )
+
   /** 标题 -> 笔记 的索引（用于解析 wikilink） */
   const byTitle = useMemo(() => {
     const map = new Map<string, Note>()
@@ -246,7 +321,7 @@ export function useNotes() {
     })
   }, [notes, byTitle])
 
-  return { notes, hydrated, createNote, updateNote, deleteNote, resolveLink, edges }
+  return { notes, hydrated, createNote, updateNote, deleteNote, replaceAll, mergeByTitle, resolveLink, edges }
 }
 
 export type NotesApi = ReturnType<typeof useNotes>

@@ -3,6 +3,45 @@ import { NOTE_TYPE_META, GRADE_META, GRADE_COLORS } from '@/types/note'
 import type { Note } from '@/types/note'
 import { extractLinks } from '@/types/note'
 
+// 多维分类：标签前缀 -> 维度颜色
+const DIM_META: Record<string, { label: string; color: string }> = {
+  功能: { label: '功能', color: '#3b82f6' },
+  材料: { label: '材料', color: '#22c55e' },
+  器件: { label: '器件', color: '#f97316' },
+}
+const DIM_ORDER = ['功能', '材料', '器件']
+
+// 聚焦景深：按到焦点的跳数决定模糊档位与不透明度
+const HOP_OPACITY = [1, 0.88, 0.62, 0.4]
+
+function blurLevel(hop: number | undefined): number {
+  if (hop === undefined) return 3
+  if (hop <= 1) return 0
+  return Math.min(hop - 1, 3)
+}
+
+function noteDims(n: Note): string[] {
+  const dims = new Set<string>()
+  for (const t of n.tags) {
+    const i = t.indexOf(':')
+    if (i > 0) {
+      const p = t.slice(0, i)
+      if (DIM_META[p]) dims.add(p)
+    }
+  }
+  return DIM_ORDER.filter((d) => dims.has(d))
+}
+
+function sectorPath(r1: number, r2: number, a0: number, a1: number): string {
+  const p0 = [r1 * Math.cos(a0), r1 * Math.sin(a0)]
+  const p1 = [r1 * Math.cos(a1), r1 * Math.sin(a1)]
+  const p2 = [r2 * Math.cos(a1), r2 * Math.sin(a1)]
+  const p3 = [r2 * Math.cos(a0), r2 * Math.sin(a0)]
+  const large = a1 - a0 > Math.PI ? 1 : 0
+  const f = (v: number) => v.toFixed(3)
+  return `M ${f(p0[0])} ${f(p0[1])} A ${r1} ${r1} 0 ${large} 1 ${f(p1[0])} ${f(p1[1])} L ${f(p2[0])} ${f(p2[1])} A ${r2} ${r2} 0 ${large} 0 ${f(p3[0])} ${f(p3[1])} Z`
+}
+
 interface Props {
   notes: Note[]
   onOpenNote: (id: string) => void
@@ -30,7 +69,19 @@ interface SimNode {
 export function noteMatches(n: Note, f: Filters): boolean {
   if (f.types.size > 0 && !f.types.has(n.type)) return false
   if (f.grades.size > 0 && !(n.type === 'person' && f.grades.has(n.grade || 'none'))) return false
-  if (f.tags.size > 0 && !n.tags.some((t) => f.tags.has(t))) return false
+  if (f.tags.size > 0) {
+    // 交集筛选：按标签前缀分组，同一前缀（同一维度）内满足任一即可，不同前缀之间须同时满足
+    const groups = new Map<string, Set<string>>()
+    for (const t of f.tags) {
+      const i = t.indexOf(':')
+      const key = i >= 0 ? t.slice(0, i) : ''
+      if (!groups.has(key)) groups.set(key, new Set())
+      groups.get(key)!.add(t)
+    }
+    for (const g of groups.values()) {
+      if (!n.tags.some((t) => g.has(t))) return false
+    }
+  }
   if (f.search) {
     const q = f.search.toLowerCase()
     const hay = (n.title + ' ' + n.content + ' ' + n.tags.join(' ')).toLowerCase()
@@ -44,15 +95,17 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
   const [size, setSize] = useState({ w: 800, h: 600 })
   const [hoverId, setHoverId] = useState<string | null>(null)
   const nodesRef = useRef<Map<string, SimNode>>(new Map())
-  const dragRef = useRef<{ id: string; dx: number; dy: number } | null>(null)
+  const dragRef = useRef<{ id: string; dx: number; dy: number; sx: number; sy: number } | null>(null)
+  const movedRef = useRef(false)
   const [, forceTick] = useState(0)
+  const [simNonce, setSimNonce] = useState(0)
 
   // 可见节点：先按筛选条件过滤
   const visible = useMemo(() => notes.filter((n) => noteMatches(n, filters)), [notes, filters])
 
-  // 焦点模式：只保留与焦点节点 1 跳相连的节点
-  const { shownIds, shownEdges } = useMemo(() => {
-    let ids = new Set(visible.map((n) => n.id))
+  // 边 + 聚焦跳数。聚焦时不再隐藏节点，而是按到焦点的跳数逐层虚化
+  const { shownIds, shownEdges, hopById } = useMemo(() => {
+    const ids = new Set(visible.map((n) => n.id))
     const edgeSet = new Set<string>()
     const edges: { source: string; target: string }[] = []
     for (const n of notes) {
@@ -65,19 +118,34 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
         edges.push({ source: n.id, target: o.id })
       }
     }
-    if (focusId && ids.has(focusId)) {
-      const neighbors = new Set([focusId])
-      for (const e of edges) {
-        if (e.source === focusId) neighbors.add(e.target)
-        if (e.target === focusId) neighbors.add(e.source)
-      }
-      ids = new Set([...ids].filter((id) => neighbors.has(id)))
-    }
     const kept = edges.filter((e) => ids.has(e.source) && ids.has(e.target))
-    return { shownIds: ids, shownEdges: kept }
+    const hop = new Map<string, number>()
+    if (focusId && ids.has(focusId)) {
+      hop.set(focusId, 0)
+      let frontier = [focusId]
+      let depth = 0
+      while (frontier.length > 0) {
+        depth += 1
+        const next: string[] = []
+        for (const id of frontier) {
+          for (const e of kept) {
+            let other: string | null = null
+            if (e.source === id) other = e.target
+            else if (e.target === id) other = e.source
+            if (other && ids.has(other) && !hop.has(other)) {
+              hop.set(other, depth)
+              next.push(other)
+            }
+          }
+        }
+        frontier = next
+      }
+    }
+    return { shownIds: ids, shownEdges: kept, hopById: hop }
   }, [notes, visible, focusId])
 
   const shownNotes = useMemo(() => visible.filter((n) => shownIds.has(n.id)), [visible, shownIds])
+  const focusActive = Boolean(focusId)
 
   // 尺寸自适应
   useEffect(() => {
@@ -168,12 +236,15 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
         n.x = Math.max(30, Math.min(size.w - 30, n.x))
         n.y = Math.max(30, Math.min(size.h - 30, n.y))
       }
+      let maxV = 0
+      for (const n of arr) maxV = Math.max(maxV, Math.abs(n.vx), Math.abs(n.vy))
       forceTick((t) => t + 1)
-      raf = requestAnimationFrame(step)
+      // 速度足够小就停住，避免节点持续漂移导致难以点中
+      if (maxV > 0.05) raf = requestAnimationFrame(step)
     }
     raf = requestAnimationFrame(step)
     return () => cancelAnimationFrame(raf)
-  }, [shownEdges, size])
+  }, [shownEdges, size, simNonce])
 
   const onPointerDown = useCallback((e: React.PointerEvent, id: string) => {
     const svg = svgRef.current
@@ -181,25 +252,26 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
     const pt = svgPt(svg, e.clientX, e.clientY)
     const node = nodesRef.current.get(id)
     if (!node) return
-    dragRef.current = { id, dx: pt.x - node.x, dy: pt.y - node.y }
+    movedRef.current = false
+    dragRef.current = { id, dx: pt.x - node.x, dy: pt.y - node.y, sx: pt.x, sy: pt.y }
+    setSimNonce((v) => v + 1)
     ;(e.target as Element).setPointerCapture?.(e.pointerId)
   }, [])
 
-  const onPointerMove = useCallback(
-    (e: React.PointerEvent) => {
-      const drag = dragRef.current
-      if (!drag) return
-      const svg = svgRef.current
-      const node = nodesRef.current.get(drag.id)
-      if (!svg || !node) return
-      const pt = svgPt(svg, e.clientX, e.clientY)
-      node.x = pt.x - drag.dx
-      node.y = pt.y - drag.dy
-      node.vx = 0
-      node.vy = 0
-    },
-    [],
-  )
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    const drag = dragRef.current
+    if (!drag) return
+    const svg = svgRef.current
+    const node = nodesRef.current.get(drag.id)
+    if (!svg || !node) return
+    const pt = svgPt(svg, e.clientX, e.clientY)
+    // 位移超过阈值即视为拖动，松手后不会触发点击
+    if (!movedRef.current && Math.hypot(pt.x - drag.sx, pt.y - drag.sy) > 4) movedRef.current = true
+    node.x = pt.x - drag.dx
+    node.y = pt.y - drag.dy
+    node.vx = 0
+    node.vy = 0
+  }, [])
 
   const onPointerUp = useCallback(() => {
     dragRef.current = null
@@ -215,7 +287,23 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
         className="h-full w-full touch-none select-none"
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onClick={(e) => {
+          if (e.target === svgRef.current) onFocusChange(null)
+        }}
+        onContextMenu={(e) => e.preventDefault()}
       >
+        <defs>
+          <filter id="kgblur1" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="1.1" />
+          </filter>
+          <filter id="kgblur2" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="2.1" />
+          </filter>
+          <filter id="kgblur3" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur stdDeviation="3.2" />
+          </filter>
+        </defs>
+
         {/* 边 */}
         {shownEdges.map((e, i) => {
           const a = map.get(e.source)
@@ -223,6 +311,10 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
           if (!a || !b) return null
           const active =
             hoverId === e.source || hoverId === e.target || focusId === e.source || focusId === e.target
+          const nearFocus =
+            focusActive && (hopById.get(e.source) ?? 9) <= 1 && (hopById.get(e.target) ?? 9) <= 1
+          const opacity = focusActive ? (nearFocus ? 0.6 : 0.07) : active ? 0.7 : 0.22
+          const width = focusActive ? (nearFocus ? 1.6 : 1) : active ? 1.8 : 1.2
           return (
             <line
               key={i}
@@ -231,11 +323,12 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
               x2={b.x}
               y2={b.y}
               stroke={active ? 'hsl(var(--primary))' : 'hsl(var(--muted-foreground))'}
-              strokeOpacity={active ? 0.7 : 0.22}
-              strokeWidth={active ? 1.8 : 1.2}
+              strokeOpacity={opacity}
+              strokeWidth={width}
             />
           )
         })}
+
         {/* 节点 */}
         {shownNotes.map((n) => {
           const node = map.get(n.id)
@@ -245,25 +338,31 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
           const isHover = n.id === hoverId
           const color = n.type === 'person' && n.grade ? GRADE_COLORS[n.grade] : meta.color
           const r = isFocus || isHover ? 13 : 10
+          const dims = noteDims(n)
+          const lvl = focusActive ? blurLevel(hopById.get(n.id)) : 0
           return (
             <g
               key={n.id}
               transform={`translate(${node.x},${node.y})`}
               className="cursor-pointer"
+              opacity={focusActive ? HOP_OPACITY[lvl] : 1}
+              filter={lvl > 0 ? `url(#kgblur${lvl})` : undefined}
               onPointerDown={(e) => onPointerDown(e, n.id)}
               onMouseEnter={() => setHoverId(n.id)}
               onMouseLeave={() => setHoverId(null)}
-              onClick={() => onOpenNote(n.id)}
-              onDoubleClick={() => onFocusChange(isFocus ? null : n.id)}
+              onClick={() => {
+                if (movedRef.current) return
+                // 未选中 → 选中并聚焦；已选中 → 打开笔记
+                if (isFocus) onOpenNote(n.id)
+                else onFocusChange(n.id)
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                if (movedRef.current) return
+                onFocusChange(isFocus ? null : n.id)
+              }}
             >
-              <circle
-                r={r + 5}
-                fill="transparent"
-                onDoubleClick={(e) => {
-                  e.stopPropagation()
-                  onFocusChange(isFocus ? null : n.id)
-                }}
-              />
+              <circle r={r + 7} fill="transparent" />
               <circle
                 r={r}
                 fill={color}
@@ -272,6 +371,25 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
                 strokeWidth={isFocus ? 3 : 1.5}
                 style={{ transition: 'r 0.15s' }}
               />
+              {dims.length === 1 && (
+                <circle r={r + 4} fill="none" stroke={DIM_META[dims[0]].color} strokeWidth={4} />
+              )}
+              {dims.length > 1 && (
+                <g>
+                  {dims.map((d, i) => {
+                    const a0 = (i / dims.length) * 2 * Math.PI - Math.PI / 2
+                    const a1 = ((i + 1) / dims.length) * 2 * Math.PI - Math.PI / 2
+                    return (
+                      <path
+                        key={d}
+                        d={sectorPath(r + 2, r + 6, a0, a1)}
+                        fill={DIM_META[d].color}
+                        fillOpacity={0.9}
+                      />
+                    )
+                  })}
+                </g>
+              )}
               <text
                 y={r + 14}
                 textAnchor="middle"
@@ -302,7 +420,9 @@ export function GraphView({ notes, onOpenNote, filters, focusId, onFocusChange }
       <div className="pointer-events-none absolute bottom-3 left-3 rounded-md bg-background/80 px-3 py-1.5 text-xs text-muted-foreground backdrop-blur">
         显示 {shownNotes.length} / {notes.length} 篇笔记 · {shownEdges.length} 条连线
         {focusId && noteById.get(focusId) && (
-          <span className="ml-2 text-primary">焦点：{noteById.get(focusId)!.title}（双击节点可取消）</span>
+          <span className="ml-2 text-primary">
+            焦点：{noteById.get(focusId)!.title}（再次单击可打开，单击空白处取消）
+          </span>
         )}
       </div>
     </div>

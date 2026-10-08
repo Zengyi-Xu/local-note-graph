@@ -5,4 +5,5 @@ contextBridge.exposeInMainWorld('knowledgeGraphDesktop', {
   chooseSyncFile: () => ipcRenderer.invoke('sync:choose-file'),
   writeSyncFile: (filePath, contents) =>
     ipcRenderer.invoke('sync:write-file', { filePath, contents }),
+  readSyncFile: (filePath) => ipcRenderer.invoke('sync:read-file', { filePath }),
 })

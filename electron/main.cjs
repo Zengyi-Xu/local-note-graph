@@ -109,6 +109,20 @@ function registerSyncHandlers() {
     await fs.rename(tempPath, targetPath)
     return { filePath: targetPath }
   })
+
+  ipcMain.handle('sync:read-file', async (_event, payload) => {
+    if (!payload || typeof payload.filePath !== 'string') {
+      throw new Error('Invalid read payload')
+    }
+    const targetPath = path.resolve(payload.filePath)
+    try {
+      const content = await fs.readFile(targetPath, 'utf8')
+      return { content }
+    } catch (error) {
+      if (error && error.code === 'ENOENT') return { content: null }
+      throw error
+    }
+  })
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()

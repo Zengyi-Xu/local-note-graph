@@ -73,3 +73,31 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ------------------------------------------------------------------ 移动端适配
+ *
+ * 作用域限定在 .note-item / .note-item-title（src/components/NoteList.tsx），
+ * 桌面端（>= 768px）不产生任何影响；不做全局 overflow-x 兜底，避免掩盖真实溢出。
+ * 手机端列表项比桌面窄，长标题允许换行两行，且不得挤出右侧图标与元数据。
+ */
+.note-item {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.note-item-title {
+  @apply truncate;
+}
+@media (max-width: 767px) {
+  .note-item {
+    min-height: 44px;
+  }
+  .note-item-title {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.35;
+  }
+}

@@ -9,6 +9,7 @@ declare global {
         filePath: string,
         contents: string,
       ) => Promise<{ filePath: string }>
+      readSyncFile: (filePath: string) => Promise<{ content: string | null }>
     }
   }
 }
