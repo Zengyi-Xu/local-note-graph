@@ -55,7 +55,7 @@ function createWindow() {
     show: false,
     backgroundColor: '#ffffff',
     autoHideMenuBar: true,
-    title: 'KAUST 团队知识图谱',
+    title: '本地笔记图谱',
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
