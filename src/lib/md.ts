@@ -6,7 +6,7 @@
  *         围栏代码块(``` 或 ~~~)、引用(> ，可多行)、GFM 表格(含对齐)、分隔线
  *   行内：**粗体**、*斜体* / _斜体_、~~删除线~~、`行内代码`、
  *         [文字](链接)、![图片](地址)、<自动链接>、裸 URL、
- *         [[双链]]、[[双链|别名]]、#标签、反斜杠转义
+ *         [[双链]]、[[双链|别名]]、#标签、~下标~、^上标^、反斜杠转义
  *
  * 有意保留的行为：**不以空行分隔的相邻文本行各自成为一个段落**（与本应用此前的
  * 渲染一致，避免已有笔记的排版被改变）。标准 Markdown 会把它们合并成一段。
@@ -47,7 +47,27 @@ const SAFE_URL = /^(https?:|mailto:)/i
 const SAFE_IMG = /^(https?:|data:image\/)/i
 
 /** 允许的反斜杠转义字符 */
-const ESCAPABLE = '\\`*_{}[]()#+-.!|~>'
+const ESCAPABLE = '\\`*_{}[]()#+-.!|~>^'
+
+/** Single delimiters only; double tildes remain strikethrough. */
+function scriptSpan(src: string, delimiter: '~' | '^'): { value: string; length: number } | null {
+  if (src[0] !== delimiter || src[1] === delimiter) return null
+  let value = ''
+  for (let i = 1; i < src.length; i++) {
+    const ch = src[i]
+    if (ch === '\\' && (src[i + 1] === delimiter || src[i + 1] === ' ' || src[i + 1] === '\\')) {
+      value += src[++i]
+      continue
+    }
+    if (ch === delimiter) {
+      if (!value || src[i + 1] === delimiter) return null
+      return { value, length: i + 1 }
+    }
+    if (/\s/.test(ch)) return null
+    value += ch
+  }
+  return null
+}
 
 function pushInline(out: Inline[], node: Inline) {
   const last = out[out.length - 1]
@@ -150,6 +170,23 @@ export function parseInline(src: string): Inline[] {
       continue
     }
 
+    // Typora-style scripts; code, links and double tildes take precedence.
+    if (
+      (rest[0] === '~' || rest[0] === '^') &&
+      (i === 0 || src[i - 1] !== rest[0])
+    ) {
+      const span = scriptSpan(rest, rest[0])
+      if (span) {
+        flush()
+        pushInline(out, {
+          t: rest[0] === '~' ? 'sub' : 'sup',
+          c: [{ t: 'text', v: span.value }],
+        })
+        i += span.length
+        continue
+      }
+    }
+
     // *斜体* / _斜体_
     if ((m = rest.match(/^\*(\S(?:[^*]*?\S)?)\*/)) || (m = rest.match(/^_(\S(?:[^_]*?\S)?)_/))) {
       flush()
@@ -180,7 +217,7 @@ export function parseInline(src: string): Inline[] {
     }
 
     // 普通文本：攒到下一个可能触发语法/换行的字符
-    const next = rest.search(/[\\`!\[<*_~#h]/)
+    const next = rest.search(/[\\`!\[<*_~^#h]/)
     const take = next === -1 ? rest.length : next === 0 ? 1 : next
     buf += rest.slice(0, take)
     i += take

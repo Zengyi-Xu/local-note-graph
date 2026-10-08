@@ -5,6 +5,8 @@ node_modules/
 dist/
 dist-ssr/
 release/
+release-public-final/
+release-v1.0.1/
 
 # User data must not be published with the example application
 public/notes.json
